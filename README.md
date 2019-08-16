@@ -86,7 +86,7 @@ $ python -m upb_audio_tagging_2019.train with curated_reps=3 split=2
 ```
 
 #### with Relabeling:
-The relabeling procedure is kind of requires to train 15 models for relabeling
+The relabeling procedure requires to train 15 models for relabeling
 ##### Train models for relabeling:
 ```bash
 $ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=0
