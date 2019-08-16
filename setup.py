@@ -137,7 +137,11 @@ setup(
     install_requires=[
         'cached_property',
         'sacred',
-        'lazy_dataset'
+        'scikit-image',
+        'torch',
+        'torchcontrib',
+        'torchvision',
+        'tensorboardX'
     ],  # Optional
 
     # List additional groups of dependencies here (e.g. development
