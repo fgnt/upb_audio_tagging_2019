@@ -1,4 +1,4 @@
-# upb_audio_tagging_2019: Convolutional Recurrent Neural Network and Data Augmentation for Audio Tagging with Noisy Labels and Minimal Supervision [\[pdf\]](http://dcase.community/documents/challenge2019/technical_reports/DCASE2019_Ebbers_92_t2.pdf)
+# upb_audio_tagging_2019: Convolutional Recurrent Neural Network and Data Augmentation for Audio Tagging with Noisy Labels and Minimal Supervision [\[pdf\]](http://dcase.community/documents/workshop2019/proceedings/DCASE2019Workshop_Ebbers_54.pdf)
 
 This repository provides the source code for the 5-th place solution presented by Paderborn University for the Freesound Audio Tagging 2019 Kaggle Competition.
 Our best submitted system achieved 75.5 % label-weighted label ranking average precision (lwlrap).
@@ -9,11 +9,16 @@ Competition website: https://www.kaggle.com/c/freesound-audio-tagging-2019
 If you are using this code please cite the following paper:
 
 ```
-@Article{ebbers2019dcase,
-  author    = {Ebbers, Janek and Haeb-Umbach, Reinhold},
-  title     = {{Convolutional Recurrent Neural Network and Data Augmentation for Audio Tagging with Noisy Labels and Minimal Supervision}},
-  year      = {2019}
+@inproceedings{Ebbers2019,
+    author = "Ebbers, Janek and Häb-Umbach, Reinhold",
+    title = "Convolutional Recurrent Neural Network and Data Augmentation for Audio Tagging with Noisy Labels and Minimal Supervision",
+    booktitle = "Proceedings of the Detection and Classification of Acoustic Scenes and Events 2019 Workshop (DCASE2019)",
+    address = "New York University, NY, USA",
+    month = "October",
+    year = "2019",
+    pages = "64--68"
 }
+
 ```
 
 ## Installation
