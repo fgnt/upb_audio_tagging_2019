@@ -136,7 +136,38 @@ def create_split(seed=0):
         json.dump({'datasets': datasets}, fid, indent=4, sort_keys=True)
 
 
+def abs_path_to_rel_path(source_file, target_file, database_path):
+    with Path(source_file).open() as fid:
+        data = json.load(fid)
+    for name, ds in data['datasets'].items():
+        for example in ds.values():
+            if name == "test":
+                example.pop('events')
+            example['audio_path'] = str(
+                Path(example['audio_path']).relative_to(database_path)
+            )
+    with Path(target_file).open('w') as fid:
+        json.dump(data, fid, indent=4, sort_keys=True)
+
+
+def rel_path_to_abs_path(source_file, target_file):
+    database_path = Path(os.environ['FSDKaggle2019DIR'])
+    with Path(source_file).open() as fid:
+        data = json.load(fid)
+    for name, ds in data['datasets'].items():
+        for example in ds.values():
+            example['audio_path'] = str(
+                Path(database_path) / example['audio_path']
+            )
+    with Path(target_file).open('w') as fid:
+        json.dump(data, fid, indent=4, sort_keys=True)
+
+
 if __name__ == "__main__":
     create_json()
     for seed in range(3):
         create_split(seed)
+        # preprocess relabeled splits
+        source_file = jsons_dir / f'fsd_kaggle_2019_split{seed}_relabeled_orig.json'
+        target_file = jsons_dir / f'fsd_kaggle_2019_split{seed}_relabeled.json'
+        rel_path_to_abs_path(source_file, target_file)

@@ -67,52 +67,62 @@ To train the ensembles described in our paper you need to run the following
 configurations:
 #### with provided labels:
 ```bash
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=7 split=0
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=7 split=1
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=7 split=2
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=5 split=0
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=5 split=1
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=5 split=2
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=3 split=0
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=3 split=1
-$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None curated_reps=3 split=2
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 curated_reps=3
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 curated_reps=3
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 curated_reps=3
 ```
 #### with Multi-Task-Learning:
 ```bash
-$ python -m upb_audio_tagging_2019.train with curated_reps=7 split=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=7 split=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=7 split=2
-$ python -m upb_audio_tagging_2019.train with curated_reps=5 split=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=5 split=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=5 split=2
-$ python -m upb_audio_tagging_2019.train with curated_reps=3 split=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=3 split=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=3 split=2
+$ python -m upb_audio_tagging_2019.train with split=0 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with split=1 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with split=2 curated_reps=7
+$ python -m upb_audio_tagging_2019.train with split=0 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with split=1 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with split=2 curated_reps=5
+$ python -m upb_audio_tagging_2019.train with split=0 curated_reps=3
+$ python -m upb_audio_tagging_2019.train with split=1 curated_reps=3
+$ python -m upb_audio_tagging_2019.train with split=2 curated_reps=3
 ```
 
 #### with Relabeling:
-The relabeling procedure requires to train 15 models for relabeling
-##### Train models for relabeling:
 ```bash
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=2
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=3
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=0 fold=4
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=1 fold=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=1 fold=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=1 fold=2
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=1 fold=3
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=1 fold=4
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=2 fold=0
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=2 fold=1
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=2 fold=2
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=2 fold=3
-$ python -m upb_audio_tagging_2019.train with curated_reps=9 split=2 fold=4
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 relabeled=True curated_reps=6
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 relabeled=True curated_reps=6
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 relabeled=True curated_reps=6
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 relabeled=True curated_reps=4
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 relabeled=True curated_reps=4
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 relabeled=True curated_reps=4
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=0 relabeled=True curated_reps=2
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=1 relabeled=True curated_reps=2
+$ python -m upb_audio_tagging_2019.train with model.fcn_noisy=None split=2 relabeled=True curated_reps=2
 ```
+##### Reproduce relabeling:
+The relabeling procedure requires to train 15 models for relabeling
+```bash
+$ python -m upb_audio_tagging_2019.train with split=0 fold=0 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=0 fold=1 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=0 fold=2 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=0 fold=3 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=0 fold=4 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=1 fold=0 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=1 fold=1 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=1 fold=2 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=1 fold=3 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=1 fold=4 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=2 fold=0 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=2 fold=1 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=2 fold=2 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=2 fold=3 curated_reps=9
+$ python -m upb_audio_tagging_2019.train with split=2 fold=4 curated_reps=9
+```
+Perform relabeling: Code not yet available
 
-##### Perform relabeling:
-
-##### Train on relabeled data:
 
 ### Inference:
+Kaggle kernel not yet public

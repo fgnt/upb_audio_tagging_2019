@@ -42,6 +42,7 @@ def config():
     # Data configuration
     use_noisy = True
     split = 0
+    relabeled = False
     fold = None
     curated_reps = 7
     mixup_probs = [1/3, 2/3]
@@ -54,7 +55,7 @@ def config():
         'n_mels': 128,
         'fmin': 50,
         'fmax': 16000,
-        'storage_dir': storage_dir
+        'storage_dir': str(storage_dir)
     }
     augmenter = {
         'time_warping_factor_std': None,
@@ -126,12 +127,13 @@ def config():
 
 @ex.capture
 def get_datasets(
-        use_noisy, split, fold, curated_reps, mixup_probs,
+        use_noisy, split, relabeled, fold, curated_reps, mixup_probs,
         extractor, augmenter, num_workers, batch_size, prefetch_buffer,
         max_padding_rate, bucket_expiration, event_bucketing, debug
 ):
     # prepare database
-    database_json = jsons_dir / f'fsd_kaggle_2019_split{split}.json'
+    database_json = jsons_dir / \
+        f'fsd_kaggle_2019_split{split}{"_relabeled" if relabeled else ""}.json'
     db = JsonDatabase(database_json)
 
     def add_noisy_flag(example):
