@@ -24,7 +24,7 @@ If you are using this code please cite the following paper:
 ## Installation
 Install requirements
 ```bash
-$ pip install --user git+https://github.com/fgnt/lazy_dataset.git
+$ pip install --user git+https://github.com/fgnt/lazy_dataset.git@ec06c1e8ff4ccb09420d2d641db8f6d9b1099a4f
 ```
 
 Clone the repo
