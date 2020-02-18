@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import samplerate
 import soundfile
-import torch
 from cached_property import cached_property
 from lazy_dataset import Dataset, FilterException
 from lazy_dataset.core import DynamicTimeSeriesBucket
@@ -14,7 +13,6 @@ from scipy.interpolate import make_interp_spline
 from scipy.signal import stft
 from skimage.transform import warp
 from tqdm import tqdm
-from upb_audio_tagging_2019.utils import nested_op, to_list
 
 
 def split_dataset(dataset, fold, nfolfds=5, seed=0):
@@ -132,18 +130,11 @@ class MixUpDataset(Dataset):
         return [self.input_dataset[item], *mixins]
 
 
-class Extractor:
+class AudioReader:
     def __init__(
             self,
             input_sample_rate=44100,
-            target_sample_rate=44100,
-            frame_step=882,
-            frame_length=1764,
-            fft_length=2048,
-            n_mels=128,
-            fmin=50,
-            fmax=None,
-            storage_dir=None
+            target_sample_rate=44100
     ):
         """
         Reads an audio from file, extracts normalized log mel spectrogram
@@ -152,40 +143,18 @@ class Extractor:
         Args:
             input_sample_rate:
             target_sample_rate:
-            frame_step:
-            frame_length:
-            fft_length:
-            n_mels:
-            fmin:
-            fmax:
-            storage_dir:
         """
         self.input_sample_rate = input_sample_rate
         self.target_sample_rate = target_sample_rate
-        self.frame_step = frame_step
-        self.frame_length = frame_length
-        self.fft_length = fft_length
-        self.n_mels = n_mels
-        self.stft = STFT(
-            frame_step=frame_step, frame_length=frame_length,
-            fft_length=fft_length, pad=False, always3d=True
-        )
-        self.mel_transform = MelTransform(
-            sample_rate=self.target_sample_rate, fft_length=fft_length,
-            n_mels=n_mels, fmin=fmin, fmax=fmax
-        )
-        self.moments = None
-
-        self.label_mapping = None
-        self.inverse_label_mapping = None
-        self.storage_dir = storage_dir
 
     def __call__(self, example):
-        example = self.read_audio(example)
-        example = self.extract_features(example)
-        example = self.normalize(example)
-        example = self.encode_labels(example)
-        return self.finalize(example)
+        if isinstance(example, (list, tuple)):
+            example = [self.read_audio(ex) for ex in example]
+            example = self.mixup(example)
+        else:
+            assert isinstance(example, dict)
+            example = self.read_audio(example)
+        return example
 
     def read_audio(self, example):
         if example['audio_length'] > 30.:
@@ -210,92 +179,53 @@ class Extractor:
         example["audio_data"] = audio
         return example
 
-    def extract_features(self, example):
-        audio = example["audio_data"]
-        stft = self.stft(audio)
-        spec = stft.real**2 + stft.imag**2
-        x = self.mel_transform(spec)
-        x = np.log(np.maximum(x, 1e-18))
-        example["features"] = x
-        example["seq_len"] = x.shape[1]
-        return example
+    def mixup(self, examples):
+        assert len(examples) > 0
+        if len(examples) == 1:
+            return examples[0]
 
-    def normalize(self, example):
-        assert self.moments is not None
-        if isinstance(self.moments, (list, tuple)):
-            mean, scale = self.moments
-        else:
-            assert isinstance(self.moments, dict)
-            dataset = example['dataset']
-            mean, scale = self.moments[dataset]
-        example['features'] -= mean
-        example['features'] /= (scale + 1e-18)
-        return example
+        ref_value = np.abs(examples[0]['audio_data']).max()
+        events = set(examples[0]['events'])
 
-    def initialize_norm(self, dataset_name=None, dataset=None, max_workers=0):
-        filename = f"{dataset_name}_moments.json" if dataset_name \
-            else "moments.json"
-        filepath = None if self.storage_dir is None \
-            else (Path(self.storage_dir) / filename).expanduser().absolute()
-        if dataset is not None:
-            dataset = dataset.map(self.read_audio).map(self.extract_features)
-            if max_workers > 0:
-                dataset = dataset.prefetch(
-                    max_workers, 2 * max_workers, catch_filter_exception=True
-                )
-        moments = read_moments(
-            dataset, "features", center_axis=(0, 1), scale_axis=(0, 1, 2),
-            filepath=filepath, verbose=True
-        )
-        if dataset_name is None:
-            assert self.moments is None
-            self.moments = moments
-        else:
-            if self.moments is None:
-                self.moments = {}
-            assert dataset_name not in self.moments
-            self.moments[dataset_name] = moments
+        start_indices = [0]
+        stop_indices = [examples[0]['audio_data'].shape[-1]]
+        for example in examples[1:]:
+            min_start = max(-example['audio_data'].shape[-1], np.max(stop_indices) - 30 * 44100)
+            max_start = min(
+                examples[0]['audio_data'].shape[-1],
+                np.min(start_indices) + 30 * 44100 - example['audio_data'].shape[-1]
+            )
+            if max_start < min_start:
+                raise FilterException
+            start_indices.append(
+                int(min_start + np.random.rand() * (min_start + max_start + 1))
+            )
+            stop_indices.append(start_indices[-1] + example['audio_data'].shape[-1])
+        start_indices = np.array(start_indices)
+        stop_indices = np.array(stop_indices)
+        stop_indices -= start_indices.min()
+        start_indices -= start_indices.min()
 
-    def encode_labels(self, example):
-        if 'events' not in example:
-            return example
+        mixed_audio = np.zeros((*examples[0]['audio_data'].shape[:-1], stop_indices.max()))
+        for example, start, stop in zip(examples, start_indices, stop_indices):
+            audio = example['audio_data']
+            scale = ref_value / max(np.abs(audio).max(), 1e-3)
+            scale *= (1. + np.random.rand()) ** (2*np.random.choice(2) - 1.)
+            audio *= scale
+            mixed_audio[..., start:stop] += audio
 
-        def encode(labels):
-            if isinstance(labels, (list, tuple)):
-                return [self.label_mapping[label] for label in labels]
-            return self.label_mapping[labels]
-
-        nhot_encoding = np.zeros(len(self.label_mapping)).astype(np.float32)
-        if len(example['events']) > 0:
-            events = np.array(encode(example['events']))
-            nhot_encoding[events] = 1
-        example['events'] = nhot_encoding
-        return example
-
-    def initialize_labels(self, dataset=None):
-        filename = f"labels.json"
-        filepath = None if self.storage_dir is None \
-            else (Path(self.storage_dir) / filename).expanduser().absolute()
-        labels = read_labels(dataset, 'events', filepath, verbose=True)
-        self.label_mapping = {
-            label: i for i, label in enumerate(labels)
+            events.update(example['events'])
+        # mixed_audio += np.random.rand() * np.random.randn(mixed_audio.shape[-1]) * ref_value / 10.
+        is_noisy = np.array([example['is_noisy'] for example in examples]).any()
+        mix = {
+            'example_id': examples[0]['example_id'],
+            'dataset': examples[0]['dataset'],
+            'audio_data': mixed_audio,
+            'audio_length': mixed_audio.shape[-1] / self.target_sample_rate,
+            'events': list(events),
+            'is_noisy': is_noisy
         }
-        self.inverse_label_mapping = {
-            i: label for label, i in self.label_mapping.items()
-        }
-
-    def finalize(self, example):
-        x = example['features']
-        example_ = {
-            'example_id': example['example_id'],
-            'dataset': example['dataset'],
-            'is_noisy': np.array(example['is_noisy']).astype(np.float32),
-            'features': np.moveaxis(x, 1, 2).astype(np.float32),
-            'seq_len': example['seq_len'],
-        }
-        if 'events' in example:
-            example_['events'] = example['events']
-        return example_
+        return mix
 
 
 class STFT:
@@ -333,7 +263,7 @@ class STFT:
         self.pad = pad
         self.always3d = always3d
 
-    def __call__(self, x):
+    def stft(self, x):
         x = stft(
             x,
             nperseg=self.frame_length,
@@ -351,6 +281,12 @@ class STFT:
             assert x.ndim == 3
 
         return x
+
+    def __call__(self, example):
+        audio = example["audio_data"]
+        x = self.stft(audio)
+        example["features"] = np.stack([x.real, x.imag], axis=-1)
+        return example
 
 
 class MelTransform:
@@ -396,13 +332,62 @@ class MelTransform:
         fbanks = fbanks / fbanks.sum(axis=-1, keepdims=True)
         return fbanks.T
 
-    def __call__(self, x):
+    def transform(self, x):
         x = np.dot(x, self.fbanks)
         if self.always3d:
             if x.ndim == 2:
                 x = x[None]
             assert x.ndim == 3
         return x
+
+    def __call__(self, example):
+        x = np.sum(example["features"]**2, axis=-1)
+        x = self.transform(x)
+        x = np.log(np.maximum(x, 1e-18))
+        example["features"] = x
+        return example
+
+
+class Normalizer:
+    def __init__(self, storage_dir=None):
+        self.moments = None
+        self.storage_dir = storage_dir
+
+    def __call__(self, example):
+        assert self.moments is not None
+        if isinstance(self.moments, (list, tuple)):
+            mean, scale = self.moments
+        else:
+            assert isinstance(self.moments, dict)
+            dataset = example['dataset']
+            mean, scale = self.moments[dataset]
+        example['features'] -= mean
+        example['features'] /= (scale + 1e-18)
+        return example
+
+    def initialize_norm(self, dataset_name=None, dataset=None, max_workers=0):
+        filename = f"{dataset_name}_moments.json" if dataset_name \
+            else "moments.json"
+        filepath = None if self.storage_dir is None \
+            else (Path(self.storage_dir) / filename).expanduser().absolute()
+        if dataset is not None:
+            dataset = dataset
+            if max_workers > 0:
+                dataset = dataset.prefetch(
+                    max_workers, 2 * max_workers, catch_filter_exception=True
+                )
+        moments = read_moments(
+            dataset, "features", center_axis=(0, 1), scale_axis=(0, 1, 2),
+            filepath=filepath, verbose=True
+        )
+        if dataset_name is None:
+            assert self.moments is None
+            self.moments = moments
+        else:
+            if self.moments is None:
+                self.moments = {}
+            assert dataset_name not in self.moments
+            self.moments[dataset_name] = moments
 
 
 def read_moments(
@@ -473,44 +458,9 @@ def read_moments(
     return np.array(mean), np.array(scale)
 
 
-def read_labels(dataset=None, key=None, filepath=None, verbose=False):
-    """
-    Loads or collects the labels in a dataset.
-
-    Args:
-        dataset: lazy dataset providing example dicts
-        key: key of the labels in an example dict
-        filepath: file to load/store the labels from/at
-        verbose:
-
-    Returns:
-
-    """
-    if filepath and Path(filepath).exists():
-        with filepath.open() as fid:
-           labels = json.load(fid)
-        if verbose:
-            print(f'Restored labels from {filepath}')
-    else:
-        labels = set()
-        for example in dataset:
-            labels.update(to_list(example[key]))
-        labels = sorted(labels)
-        if filepath:
-            with filepath.open('w') as fid:
-                json.dump(
-                    labels, fid,
-                    sort_keys=True, indent=4
-                )
-            if verbose:
-                print(f'Saved labels to {filepath}')
-    return labels
-
-
 class Augmenter:
     def __init__(
             self,
-            extractor: Extractor,
             time_warping_factor_std=None,
             time_warping_cutoff_std=0.1,
             feature_warping_factor_std=None,
@@ -524,12 +474,10 @@ class Augmenter:
     ):
         """
         Performs the following augmentations:
-            mixing a tuple of examples,
             frequency and time warping of a mel spectrogram,
             frequency and time masking of a mel spectrogram
 
         Args:
-            extractor: Extractor to read audio and extract log mel features
             time_warping_factor_std: standard deviation of the time warping factor
             time_warping_cutoff_std:
             feature_warping_factor_std: standard deviation of the feature warping factor (0.07 in our paper)
@@ -541,8 +489,6 @@ class Augmenter:
             max_masked_feature_rate: maximum rate of masked mel bands
             max_masked_features: maximum number of masked mel bands
         """
-        self.extractor = extractor
-        # augmentation
         self.time_warping_factor_std = time_warping_factor_std
         self.time_warping_cutoff_std = time_warping_cutoff_std
         self.feature_warping_factor_std = feature_warping_factor_std
@@ -555,65 +501,9 @@ class Augmenter:
         self.max_masked_features = max_masked_features
 
     def __call__(self, example):
-        if isinstance(example, (list, tuple)):
-            example = [self.extractor.read_audio(ex) for ex in example]
-            example = self.mixup(example)
-        else:
-            assert isinstance(example, dict)
-            example = self.extractor.read_audio(example)
-        example = self.extractor.extract_features(example)
-        example = self.extractor.normalize(example)
         example = self.warp(example)
         example = self.mask(example)
-        example = self.extractor.encode_labels(example)
-        return self.extractor.finalize(example)
-
-    def mixup(self, examples):
-        assert len(examples) > 0
-        if len(examples) == 1:
-            return examples[0]
-
-        ref_value = np.abs(examples[0]['audio_data']).max()
-        events = set(examples[0]['events'])
-
-        start_indices = [0]
-        stop_indices = [examples[0]['audio_data'].shape[-1]]
-        for example in examples[1:]:
-            min_start = max(-example['audio_data'].shape[-1], np.max(stop_indices) - 30 * 44100)
-            max_start = min(
-                examples[0]['audio_data'].shape[-1],
-                np.min(start_indices) + 30 * 44100 - example['audio_data'].shape[-1]
-            )
-            if max_start < min_start:
-                raise FilterException
-            start_indices.append(
-                int(min_start + np.random.rand() * (min_start + max_start + 1))
-            )
-            stop_indices.append(start_indices[-1] + example['audio_data'].shape[-1])
-        start_indices = np.array(start_indices)
-        stop_indices = np.array(stop_indices)
-        stop_indices -= start_indices.min()
-        start_indices -= start_indices.min()
-
-        mixed_audio = np.zeros((*examples[0]['audio_data'].shape[:-1], stop_indices.max()))
-        for example, start, stop in zip(examples, start_indices, stop_indices):
-            audio = example['audio_data']
-            scale = ref_value / max(np.abs(audio).max(), 1e-3)
-            scale *= (1. + np.random.rand()) ** (2*np.random.choice(2) - 1.)
-            audio *= scale
-            mixed_audio[..., start:stop] += audio
-
-            events.update(example['events'])
-        # mixed_audio += np.random.rand() * np.random.randn(mixed_audio.shape[-1]) * ref_value / 10.
-        is_noisy = np.array([example['is_noisy'] for example in examples]).any()
-        mix = {
-            'example_id': examples[0]['example_id'],
-            'dataset': examples[0]['dataset'],
-            'audio_data': mixed_audio,
-            'events': list(events),
-            'is_noisy': is_noisy
-        }
-        return mix
+        return example
 
     def warp(self, example):
         x = example['features']
@@ -733,109 +623,34 @@ class EventTimeSeriesBucket(DynamicTimeSeriesBucket):
         self.event_mat = np.concatenate([self.event_mat, events[None]])
 
 
-class Collate:
-    """
-
-    >>> batch = [{'a': np.ones((5,2)), 'b': '0'}, {'a': np.ones((3,2)), 'b': '1'}]
-    >>> Collate()(batch)
-    {'a': tensor([[[1., 1.],
-             [1., 1.],
-             [1., 1.],
-             [1., 1.],
-             [1., 1.]],
-    <BLANKLINE>
-            [[1., 1.],
-             [1., 1.],
-             [1., 1.],
-             [0., 0.],
-             [0., 0.]]]), 'b': ['0', '1']}
-    """
-    def __init__(self, to_tensor=True):
+class DatasetBalancedTimeSeriesBucket(DynamicTimeSeriesBucket):
+    def __init__(self, init_example, min_examples, **kwargs):
         """
-        Collates a list of example dicts to a dict of lists, where lists of
-        numpy arrays are stacked. Optionally casts numpy arrays to torch Tensors.
+        Extension of the DynamicTimeSeriesBucket such that examples are
+        balanced with respect to the dataset they originate from
 
         Args:
-            to_tensor:
+            init_example: first example in the bucket
+            dataset_sizes:
+            **kwargs: kwargs of DynamicTimeSeriesBucket
         """
-        self.to_tensor = to_tensor
+        super().__init__(init_example, **kwargs)
+        self.min_examples = min_examples
+        self.counts = {key: 0 for key in min_examples}
 
-    def __call__(self, example, training=False):
-        example = nested_op(self.collate, *example, sequence_type=())
-        return example
-
-    def collate(self, *batch):
-        batch = list(batch)
-        if isinstance(batch[0], np.ndarray):
-            max_len = np.zeros_like(batch[0].shape)
-            for array in batch:
-                max_len = np.maximum(max_len, array.shape)
-            for i, array in enumerate(batch):
-                pad = max_len - array.shape
-                if np.any(pad):
-                    assert np.sum(pad) == np.max(pad), (
-                        'arrays are only allowed to differ in one dim',
-                    )
-                    pad = [(0, n) for n in pad]
-                    batch[i] = np.pad(array, pad_width=pad, mode='constant')
-            batch = np.array(batch).astype(batch[0].dtype)
-            if self.to_tensor:
-                batch = torch.from_numpy(batch)
-        return batch
-
-
-def batch_to_device(batch, device=None):
-    """
-    Moves a nested structure to the device.
-    Numpy arrays are converted to torch.Tensor, except complex numpy arrays
-    that aren't supported in the moment in torch.
-
-    The original doctext from torch for `.to`:
-    Tensor.to(device=None, dtype=None, non_blocking=False, copy=False) → Tensor
-        Returns a Tensor with the specified device and (optional) dtype. If
-        dtype is None it is inferred to be self.dtype. When non_blocking, tries
-        to convert asynchronously with respect to the host if possible, e.g.,
-        converting a CPU Tensor with pinned memory to a CUDA Tensor. When copy
-        is set, a new Tensor is created even when the Tensor already matches
-        the desired conversion.
-
-    Args:
-        batch:
-        device: None, 'cpu', 0, 1, ...
-
-    Returns:
-        batch on device
-
-    """
-
-    if isinstance(batch, dict):
-        return batch.__class__({
-            key: batch_to_device(value, device=device)
-            for key, value in batch.items()
-        })
-    elif isinstance(batch, (tuple, list)):
-        return batch.__class__([
-            batch_to_device(element, device=device)
-            for element in batch
-        ])
-    elif torch.is_tensor(batch):
-        return batch.to(device=device)
-    elif isinstance(batch, np.ndarray):
-        if batch.dtype in [np.complex64, np.complex128]:
-            # complex is not supported
-            return batch
-        else:
-            # TODO: Do we need to ensure tensor.is_contiguous()?
-            # TODO: If not, the representer of the tensor does not work.
-            return batch_to_device(
-                torch.from_numpy(batch), device=device
+    def assess(self, example):
+        ds = example['dataset']
+        return (
+            super().assess(example)
+            and (
+                self.counts[ds] < self.min_examples[ds]
+                or all([
+                    self.counts[key] >= self.min_examples[key]
+                    for key in self.counts
+                ])
             )
-    elif hasattr(batch, '__dataclass_fields__'):
-        return batch.__class__(
-            **{
-                f: batch_to_device(getattr(batch, f), device=device)
-                for f in batch.__dataclass_fields__
-            }
         )
-    else:
-        return batch
+
+    def _append(self, example):
+        super()._append(example)
+        self.counts[example['dataset']] += 1

@@ -1,28 +1,19 @@
-"""
-Example call:
-
-export STORAGE_ROOT=<your desired storage root>
-python -m padertorch.contrib.examples.wavenet.train print_config
-python -m padertorch.contrib.examples.wavenet.train
-"""
-import os
-from collections import defaultdict
-
 import lazy_dataset
 import numpy as np
-import tensorboardX
 import torch
 from lazy_dataset.database import JsonDatabase
+from padertorch import Trainer
+from padertorch.contrib.je.data.transforms import (
+    Collate, MultiHotLabelEncoder
+)
+from padertorch.train.optimizer import Adam
 from sacred import Experiment as Exp
 from sacred.commands import print_config
 from sacred.observers import FileStorageObserver
 from torch.nn import GRU
-from torch.optim import Adam
-from torchcontrib.optim import SWA
 from upb_audio_tagging_2019.data import (
-    split_dataset, MixUpDataset, Extractor, Augmenter,
-    DynamicTimeSeriesBucket, EventTimeSeriesBucket,
-    Collate, batch_to_device
+    split_dataset, MixUpDataset, AudioReader, STFT, MelTransform, Normalizer,
+    Augmenter, DynamicTimeSeriesBucket, EventTimeSeriesBucket
 )
 from upb_audio_tagging_2019.model import CRNN, batch_norm_update
 from upb_audio_tagging_2019.modules import CNN2d, CNN1d, fully_connected_stack
@@ -46,16 +37,21 @@ def config():
     fold = None
     curated_reps = 7
     mixup_probs = [1/3, 2/3]
-    extractor = {
+    audio_reader = {
         'input_sample_rate': 44100,
         'target_sample_rate': 44100,
+    }
+    stft = {
         'frame_step': 882,
         'frame_length': 1764,
         'fft_length': 2048,
+    }
+    mel_transform = {
+        'sample_rate': audio_reader['target_sample_rate'],
+        'fft_length': stft['fft_length'],
         'n_mels': 128,
         'fmin': 50,
         'fmax': 16000,
-        'storage_dir': str(storage_dir)
     }
     augmenter = {
         'time_warping_factor_std': None,
@@ -72,64 +68,86 @@ def config():
     bucket_expiration = 2000 * batch_size
     event_bucketing = True
 
-    # Model configuration
-    model = {
-        'cnn_2d': {
-            # 'factory': MultiScaleCNN2d,
-            'in_channels': 1,
-            'hidden_channels': [16, 16, 32, 32, 64, 64, 128, 128, 256],
-            'pool_size': [1, 2, 1, 2, 1, 2, 1, (2, 1), (2, 1)],
-            'num_layers': 9,
-            'out_channels': None,
-            'kernel_size': 3,
-            'norm': 'batch',
-            'activation': 'relu',
-            'gated': False,
-            'dropout': .0,
+    # Trainer/Model configuration
+    trainer = {
+        'model': {
+            'factory': CRNN,
+            'cnn_2d': {
+                'factory': CNN2d,
+                'in_channels': 1,
+                'hidden_channels': [16, 16, 32, 32, 64, 64, 128, 128, 256],
+                'pool_size': [1, 2, 1, 2, 1, 2, 1, (2, 1), (2, 1)],
+                'num_layers': 9,
+                'out_channels': None,
+                'kernel_size': 3,
+                'norm': 'batch',
+                'activation': 'relu',
+                'gated': False,
+                'dropout': .0,
+            },
+            'cnn_1d': {
+                'factory': CNN1d,
+                'in_channels': 1024,
+                'hidden_channels': 256,
+                'num_layers': 3,
+                'out_channels': None,
+                'kernel_size': 3,
+                'norm': 'batch',
+                'activation': 'relu',
+                'dropout': .0
+            },
+            'enc': {
+                'factory': GRU,
+                'input_size': 256,
+                'hidden_size': 256,
+                'num_layers': 2,
+                'batch_first': True,
+                'bidirectional': False,
+                'dropout': 0.,
+            },
+            'fcn': {
+                'factory': fully_connected_stack,
+                'input_size': 256,
+                'hidden_size': 256,
+                'output_size': 80,
+                'activation': 'relu',
+                'dropout': 0.,
+            },
+            'fcn_noisy': {
+                'factory': fully_connected_stack,
+                'input_size': 256,
+                'hidden_size': 256,
+                'output_size': 80,
+                'activation': 'relu',
+                'dropout': 0.,
+            },
+            'decision_boundary': .3
         },
-        'cnn_1d': {
-            'in_channels': 1024,
-            'hidden_channels': 256,
-            'num_layers': 3,
-            'out_channels': None,
-            'kernel_size': 3,
-            'norm': 'batch',
-            'activation': 'relu',
-            'dropout': .0
+        'optimizer': {
+            'factory': Adam,
+            'lr': 3e-4,
+            'gradient_clipping': 15.,
+            'weight_decay': 3e-5,
+            'swa_start': 750 if debug else 150000,
+            'swa_freq': 50 if debug else 1000,
+            'swa_lr': 3e-4,
         },
-        'enc': {
-            'input_size': 256, 'hidden_size': 256, 'num_layers': 2,
-            'batch_first': True, 'bidirectional': False, 'dropout': 0.
-        },
-        'fcn': {
-            'input_size': 256, 'hidden_size': 256, 'output_size': 80,
-            'activation': 'relu', 'dropout': 0.
-        },
-        'fcn_noisy': {
-            'input_size': 256, 'hidden_size': 256, 'output_size': 80,
-            'activation': 'relu', 'dropout': 0.
-        },
-        'decision_boundary': .3
+        'storage_dir': storage_dir,
+        'summary_trigger': (10 if debug else 100, 'iteration'),
+        'checkpoint_trigger': (500 if debug else 5000, 'iteration'),
+        'stop_trigger': (1000 if debug else 200000, 'iteration'),
     }
+    Trainer.get_config(trainer)
 
-    # Training configuration
     device = 0 if torch.cuda.is_available() else 'cpu'
-    lr = 3e-4
-    gradient_clipping = 15.
-    weight_decay = 3e-5
-    swa_start = 750 if debug else 150000
-    swa_freq = 50 if debug else 1000
-    swa_lr = lr
-    summary_interval = 10 if debug else 100
-    validation_interval = 500 if debug else 5000
-    max_steps = 1000 if debug else 200000
 
 
 @ex.capture
 def get_datasets(
         use_noisy, split, relabeled, fold, curated_reps, mixup_probs,
-        extractor, augmenter, num_workers, batch_size, prefetch_buffer,
-        max_padding_rate, bucket_expiration, event_bucketing, debug
+        audio_reader, stft, mel_transform, augmenter, num_workers, batch_size,
+        prefetch_buffer, max_padding_rate, bucket_expiration, event_bucketing,
+        debug
 ):
     # prepare database
     database_json = jsons_dir / \
@@ -139,17 +157,29 @@ def get_datasets(
     def add_noisy_flag(example):
         example['is_noisy'] = example['dataset'] != 'train_curated'
         return example
-    extractor = Extractor(**extractor)
-    augmenter = Augmenter(extractor=extractor, **augmenter)
+
+    audio_reader = AudioReader(**audio_reader)
+    stft = STFT(**stft)
+    mel_transform = MelTransform(**mel_transform)
+    normalizer = Normalizer(storage_dir=str(storage_dir))
+    augmenter = Augmenter(**augmenter)
 
     curated_train_data = db.get_dataset('train_curated').map(add_noisy_flag)
-    extractor.initialize_labels(curated_train_data)
+
+    event_encoder = MultiHotLabelEncoder(
+        label_key='events', storage_dir=storage_dir
+    )
+    event_encoder.initialize_labels(
+        dataset=curated_train_data, verbose=True
+    )
+
     if debug:
-        curated_train_data = curated_train_data.shuffle()[:len(curated_train_data)//10]
-    extractor.initialize_norm(
+        curated_train_data = curated_train_data.shuffle()[:500]
+
+    normalizer.initialize_norm(
         dataset_name='train_curated',
-        dataset=curated_train_data,
-        max_workers=num_workers
+        dataset=curated_train_data.map(audio_reader).map(stft).map(mel_transform),
+        max_workers=num_workers,
     )
 
     if fold is not None:
@@ -162,11 +192,12 @@ def get_datasets(
     if use_noisy:
         noisy_train_data = db.get_dataset('train_noisy').map(add_noisy_flag)
         if debug:
-            noisy_train_data = noisy_train_data.shuffle()[:len(noisy_train_data)//10]
-        extractor.initialize_norm(
+            noisy_train_data = noisy_train_data.shuffle()[:500]
+
+        normalizer.initialize_norm(
             dataset_name='train_noisy',
-            dataset=noisy_train_data,
-            max_workers=num_workers
+            dataset=noisy_train_data.map(audio_reader).map(stft).map(mel_transform),
+            max_workers=num_workers,
         )
         training_set = lazy_dataset.concatenate(curated_train_data, noisy_train_data)
     else:
@@ -193,12 +224,26 @@ def get_datasets(
         )
 
     print('Length of training set', len(training_set))
+    print('Length of validation set', len(validation_set))
+
+    def finalize(example):
+        x = example['features']
+        example_ = {
+            'example_id': example['example_id'],
+            'dataset': example['dataset'],
+            'is_noisy': np.array(example['is_noisy']).astype(np.float32),
+            'features': x.astype(np.float32),
+            'seq_len': x.shape[1],
+        }
+        if 'events' in example:
+            example_['events'] = example['events']
+        return example_
 
     bucket_cls = EventTimeSeriesBucket if event_bucketing \
         else DynamicTimeSeriesBucket
 
     def prepare_iterable(dataset, drop_incomplete=False):
-        return dataset.prefetch(
+        return dataset.map(event_encoder).map(finalize).prefetch(
             num_workers=num_workers, buffer_size=prefetch_buffer,
             catch_filter_exception=True
         ).batch_dynamic_bucket(
@@ -209,141 +254,40 @@ def get_datasets(
         ).map(Collate())
 
     training_set = prepare_iterable(
-        training_set.map(augmenter).shuffle(reshuffle=True),
+        training_set.map(audio_reader).map(stft).map(mel_transform).map(normalizer).map(augmenter).shuffle(reshuffle=True),
         drop_incomplete=True
     )
     batch_norm_tuning_set = prepare_iterable(
-        batch_norm_tuning_set.map(extractor), drop_incomplete=True
+        batch_norm_tuning_set.map(audio_reader).map(stft).map(mel_transform).map(normalizer),
+        drop_incomplete=True
     )
     if validation_set is not None:
-        validation_set = prepare_iterable(validation_set.map(extractor))
+        validation_set = prepare_iterable(
+            validation_set.map(audio_reader).map(stft).map(mel_transform).map(normalizer)
+        )
 
     return training_set, validation_set, batch_norm_tuning_set
 
 
 @ex.automain
 def train(
-        _run, model, device, lr, gradient_clipping, weight_decay,
-        swa_start, swa_freq, swa_lr,
-        summary_interval, validation_interval, max_steps
+        _run, trainer, device,
 ):
     print_config(_run)
-    os.makedirs(storage_dir / 'checkpoints', exist_ok=True)
+    trainer = Trainer.from_config(trainer)
     train_iter, validate_iter, batch_norm_tuning_iter = get_datasets()
-    model = CRNN(
-        cnn_2d=CNN2d(**model['cnn_2d']),
-        cnn_1d=CNN1d(**model['cnn_1d']),
-        enc=GRU(**model['enc']),
-        fcn=fully_connected_stack(**model['fcn']),
-        fcn_noisy=None if model['fcn_noisy'] is None
-        else fully_connected_stack(**model['fcn_noisy']),
-    )
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
-    model = model.to(device)
-    model.train()
-    optimizer = Adam(
-        tuple(model.parameters()), lr=lr, weight_decay=weight_decay
-    )
-    if swa_start is not None:
-        optimizer = SWA(
-            optimizer, swa_start=swa_start, swa_freq=swa_freq, swa_lr=swa_lr
-        )
-
-    torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = False
-
-    # Summary
-    summary_writer = tensorboardX.SummaryWriter(str(storage_dir))
-
-    def get_empty_summary():
-        return dict(
-            scalars=defaultdict(list),
-            histograms=defaultdict(list),
-            images=dict(),
-        )
-
-    def update_summary(review, summary):
-        review['scalars']['loss'] = review['loss'].detach()
-        for key, value in review['scalars'].items():
-            if torch.is_tensor(value):
-                value = value.cpu().data.numpy()
-            summary['scalars'][key].extend(
-                np.array(value).flatten().tolist()
-            )
-        for key, value in review['histograms'].items():
-            if torch.is_tensor(value):
-                value = value.cpu().data.numpy()
-            summary['histograms'][key].extend(
-                np.array(value).flatten().tolist()
-            )
-        summary['images'] = review['images']
-
-    def dump_summary(summary, prefix, iteration):
-        summary = model.modify_summary(summary)
-
-        # write summary
-        for key, value in summary['scalars'].items():
-            summary_writer.add_scalar(
-                f'{prefix}/{key}', np.mean(value), iteration
-            )
-        for key, values in summary['histograms'].items():
-            summary_writer.add_histogram(
-                f'{prefix}/{key}', np.array(values), iteration
-            )
-        for key, image in summary['images'].items():
-            summary_writer.add_image(
-                f'{prefix}/{key}', image, iteration
-            )
-        return defaultdict(list)
-
-    # Training loop
-    train_summary = get_empty_summary()
-    i = 0
-    while i < max_steps:
-        for batch in train_iter:
-            optimizer.zero_grad()
-            # forward
-            batch = batch_to_device(batch, device=device)
-            model_out = model(batch)
-
-            # backward
-            review = model.review(batch, model_out)
-            review['loss'].backward()
-            review['histograms']['grad_norm'] = torch.nn.utils.clip_grad_norm_(
-                tuple(model.parameters()), gradient_clipping
-            )
-            optimizer.step()
-
-            # update summary
-            update_summary(review, train_summary)
-
-            i += 1
-            if i % summary_interval == 0:
-                dump_summary(train_summary, 'training', i)
-                train_summary = get_empty_summary()
-            if i % validation_interval == 0 and validate_iter is not None:
-                print('Starting Validation')
-                model.eval()
-                validate_summary = get_empty_summary()
-                with torch.no_grad():
-                    for batch in validate_iter:
-                        batch = batch_to_device(batch, device=device)
-                        model_out = model(batch)
-                        review = model.review(batch, model_out)
-                        update_summary(review, validate_summary)
-                dump_summary(validate_summary, 'validation', i)
-                print('Finished Validation')
-                model.train()
-            if i >= max_steps:
-                break
+    if validate_iter is not None:
+        trainer.register_validation_hook(validate_iter)
+    trainer.train(train_iter, device=device)
 
     # finalize
-    if swa_start is not None:
-        optimizer.swap_swa_sgd()
+    if trainer.optimizer.swa_start is not None:
+        trainer.optimizer.swap_swa_sgd()
     batch_norm_update(
-        model, batch_norm_tuning_iter, feature_key='features', device=device
+        trainer.model, batch_norm_tuning_iter,
+        feature_key='features', device=device
     )
     torch.save(
-        model.state_dict(),
+        trainer.model.state_dict(),
         storage_dir / 'checkpoints' / 'ckpt_final.pth'
     )

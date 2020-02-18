@@ -1,12 +1,12 @@
+import numpy as np
 import torch
-from upb_audio_tagging_2019.lwlrap import positive_class_precisions
-from upb_audio_tagging_2019.data import batch_to_device
+from einops import rearrange
+from padertorch.data import example_to_device
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from einops import rearrange
-from upb_audio_tagging_2019.lwlrap import lwlrap_from_precisions
 from torchvision.utils import make_grid
-import numpy as np
+from upb_audio_tagging_2019.lwlrap import lwlrap_from_precisions
+from upb_audio_tagging_2019.lwlrap import positive_class_precisions
 
 
 class CRNN(nn.Module):
@@ -69,7 +69,7 @@ class CRNN(nn.Module):
         return nn.Sigmoid()(y)
 
     def forward(self, inputs):
-        x = inputs['features']
+        x = inputs['features'].transpose(-2, -1)
         seq_len = inputs['seq_len']
         is_noisy = inputs['is_noisy']
         x, seq_len = self.cnn_2d(x, seq_len)
@@ -79,7 +79,7 @@ class CRNN(nn.Module):
 
     def review(self, inputs, outputs):
         # compute loss
-        x = inputs['features']
+        x = inputs['features'].transpose(-2, -1)
         targets = inputs['events']
         if outputs.dim() == 3:  # (B, T, K)
             if targets.dim() == 2:   # (B, K)
@@ -195,13 +195,13 @@ def batch_norm_update(
     n = 0
     with torch.no_grad():
         for i, example in enumerate(dataset):
+            example = example_to_device(example, device)
             b = example[feature_key].size(batch_dim)
 
             momentum = b / float(n + b)
             for module in momenta.keys():
                 module.momentum = momentum
 
-            example = batch_to_device(example, device)
             model(example)
 
             n += b
